@@ -1,0 +1,270 @@
+    ##comienzo Template
+  apiVersion: v1
+  kind: Template
+  metadata:
+    name: mysql-cluster-openshift-mvilche
+    labels:
+      template: mysql-cluster-openshift-mvilche
+      autor: "Martin_Fabrizzio_Vilche"
+    annotations:
+      openshift.io/display-name: "mysql-cluster-openshift-mvilche"
+      iconClass: "icon-github"
+      description: >-
+        AMYSQL CLUSTER OPENSHIFT 7.6
+        Martin Fabrizzio Vilche.
+        https://github.com/mvilche.
+
+  objects:
+
+
+############################## ZOOKEPEER
+
+
+  - apiVersion: v1
+    data:  
+      config.ini: |-
+        [tcp default]
+        SendBufferMemory=128M
+        ReceiveBufferMemory=128M
+        # Increasing the sizes of these 2 buffers beyond the default values
+        # helps prevent bottlenecks due to slow disk I/O.
+        # MANAGEMENT NODE PARAMETERS
+        [ndb_mgmd default]
+        DataDir=/var/lib/mysql-cluster/data
+        # It is possible to use a different data directory for each management
+        # server, but for ease of administration it is preferable to be
+        # consistent.
+        [ndb_mgmd]
+        HostName=mysql-mgm-0.mysql-mgm.${NAMESPACE}.svc.cluster.local
+        [ndb_mgmd]
+        HostName=mysql-mgm-1.mysql-mgm.${NAMESPACE}.svc.cluster.local
+        # DATA NODE PARAMETERS
+        [ndbd default]
+        NoOfReplicas=2
+        # Using 2 replicas is recommended to guarantee availability of data;
+        # using only 1 replica does not provide any redundancy, which means
+        # that the failure of a single data node causes the entire cluster to
+        # shut down. We do not recommend using more than 2 replicas, since 2 is
+        # sufficient to provide high availability, and we do not currently test
+        # with greater values for this parameter.
+        LockPagesInMainMemory=1
+        # On Linux and Solaris systems, setting this parameter locks data node
+        # processes into memory. Doing so prevents them from swapping to disk,
+        # which can severely degrade cluster performance.
+        DataMemory=10G
+        IndexMemory=2G
+        # The values provided for DataMemory and IndexMemory assume 4 GB RAM
+        # per data node. However, for best results, you should first calculate
+        # the memory that would be used based on the data you actually plan to
+        # store (you may find the ndb_size.pl utility helpful in estimating
+        # this), then allow an extra 20% over the calculated values. Naturally,
+        # you should ensure that each data node host has at least as much
+        # physical memory as the sum of these two values.
+        # ODirect=1
+        # Enabling this parameter causes NDBCLUSTER to try using O_DIRECT
+        # writes for local checkpoints and redo logs; this can reduce load on
+        # CPUs. We recommend doing so when using MySQL Cluster on systems running
+        # Linux kernel 2.6 or later.
+        NoOfFragmentLogFiles=300
+        DataDir=/var/lib/mysql-cluster
+        MaxNoOfConcurrentOperations=1000000
+        SchedulerSpinTimer=400
+        SchedulerExecutionTimer=100
+        RealTimeScheduler=1
+        # Setting these parameters allows you to take advantage of real-time scheduling
+        # of NDBCLUSTER threads to get higher throughput.
+        TimeBetweenGlobalCheckpoints=1000
+        TimeBetweenEpochs=200
+        DiskCheckpointSpeed=10M
+        DiskCheckpointSpeedInRestart=100M
+        RedoBuffer=32M
+        # CompressedLCP=1
+        # CompressedBackup=1
+        # Enabling CompressedLCP and CompressedBackup causes, respectively, local
+        #checkpoint files and backup files to be compressed, which can result in a space
+        #savings of up to 50% over noncompressed LCPs and backups.
+        # MaxNoOfLocalScans=64
+        MaxNoOfTables=1024
+        MaxNoOfOrderedIndexes=256
+        [ndbd]
+        HostName=mysql-data-0.mysql-data.${NAMESPACE}.svc.cluster.local
+        LockExecuteThreadToCPU=1
+        LockMaintThreadsToCPU=0
+        # On systems with multiple CPUs, these parameters can be used to lock NDBCLUSTER
+        # threads to specific CPUs
+        [ndbd]
+        HostName=mysql-data-0.mysql-data.${NAMESPACE}.svc.cluster.local
+        LockExecuteThreadToCPU=1
+        LockMaintThreadsToCPU=0
+        # SQL NODE / API NODE PARAMETERS
+        [mysqld]
+        HostName=mysql-sql-0.mysql-sql.${NAMESPACE}.svc.cluster.local
+        [mysqld]
+        HostName=mysql-sql-1.mysql-sql.${NAMESPACE}.svc.cluster.local       
+    kind: ConfigMap
+    metadata:
+      name: mgm
+
+
+
+  - apiVersion: v1
+    data:  
+      my.cnf: |-
+        [mysqld]
+        ndbcluster
+        ndb-connectstring=mysql-data-0.mysql-data.${NAMESPACE}.svc.cluster.local
+        ndb-connectstring=mysql-data-1.mysql-data.${NAMESPACE}.svc.cluster.local
+        [mysql_cluster]
+        ndb-connectstring=mysql-mgm-0.mysql-mgm.${NAMESPACE}.svc.cluster.local         
+        ndb-connectstring=mysql-mgm-1.mysql-mgm.${NAMESPACE}.svc.cluster.local
+    kind: ConfigMap
+    metadata:
+      name: sql
+
+
+  - apiVersion: v1
+    data:  
+      my.cnf: |-
+        [mysqld]
+        ndbcluster
+        ndb-connectstring=mysql-mgm-0.mysql-mgm.${NAMESPACE}.svc.cluster.local
+        ndb-connectstring=mysql-mgm-1.mysql-mgm.${NAMESPACE}.svc.cluster.local
+        default_storage_engine=ndbcluster
+        [mysql_cluster]
+        ndb-connectstring=mysql-mgm-0.mysql-mgm.${NAMESPACE}.svc.cluster.local
+        ndb-connectstring=mysql-mgm-1.mysql-mgm.${NAMESPACE}.svc.cluster.local        
+    kind: ConfigMap
+    metadata:
+      name: data
+
+
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: mysql-mgm
+      labels:
+        app: mysql-mgm
+    spec:
+      ports:
+      - port: 1186
+        name: server              
+      clusterIP: None
+      selector:
+        app: mysql-mgm
+
+
+  - apiVersion: apps/v1beta1
+    kind: StatefulSet
+    metadata:
+      name: mysql-mgm
+    spec:
+      podManagementPolicy: Parallel
+      selector:
+        matchLabels:
+          app: mysql-mgm
+      serviceName: mysql-mgm        
+      replicas: 2
+      template:
+        metadata:
+          annotations:
+            alpha.image.policy.openshift.io/resolve-names: '*'        
+          labels:
+            app: mysql-mgm
+        spec:
+          containers:
+          - env:
+              - name: NAMESPACE
+                valueFrom:
+                  fieldRef:
+                    apiVersion: v1
+                    fieldPath: metadata.namespace
+            name: mysql-mgm
+            image: mysql-mgm:7.6
+            imagePullPolicy: Always
+            command:
+            - bash
+            - "-c"
+            - |
+              ndb_mgmd -f /opt/mysql-cluster/config/config.ini                                      
+            ports:
+            - containerPort: 1186
+              name: server                       
+            volumeMounts:
+            - name: data
+              mountPath: /opt/mysql-cluster/data
+            - name: mgm
+              mountPath: /opt/mysql-cluster/config
+          volumes:
+          - name: configmap
+            configMap:
+              name: mgm
+      volumeClaimTemplates:
+      - metadata:
+          name: data
+        spec:
+          accessModes: [ "ReadWriteOnce" ]
+          resources:
+            requests:
+              storage: 1Gi           
+
+
+############################## FIN ZOOKEEPER
+
+
+###
+
+  - apiVersion: v1
+    kind: BuildConfig
+    metadata:
+      labels:
+        app: mysql-mgm
+        build: mysql-mgm
+      name: mysql-mgm
+    spec:
+      failedBuildsHistoryLimit: 5
+      nodeSelector: null
+      output:
+        to:
+          kind: ImageStreamTag
+          name: 'mysql-mgm:7.6'
+      postCommit: {}
+      resources: {}
+      runPolicy: Serial
+      source:
+        contextDir: mysql-mgm
+        git:
+          ref: master
+          uri: 'https://github.com/mvilche/apache-kafka-openshift.git'
+        type: Git
+      strategy:
+        dockerStrategy:
+          dockerfilePath: Dockerfile
+        type: Docker
+      successfulBuildsHistoryLimit: 5
+      triggers:
+        - type: ConfigChange
+
+
+  - apiVersion: v1
+    kind: ImageStream
+    metadata:
+      labels:
+        app: mysql-mgm
+      name: mysql-mgm
+    spec: {}    
+
+########################
+
+
+
+##################### KAFKA MANAGER
+
+
+################PARAMETROS
+  parameters:
+    - name: NAMESPACE
+      displayName: Nombre del proyecto donde esta desplegando el template
+      value: ''
+      required: true
+
+###############
